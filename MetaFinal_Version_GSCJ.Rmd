@@ -1,0 +1,864 @@
+---
+title: "MetaAnalysis_Updated"
+author: "Amanda, Christian, & Grace"
+date: "2023-11-15"
+output: pdf_document
+---
+
+
+```{r Load in packages}
+library(fsn)
+library(ggplot2)
+library(readr)
+library(meta)
+library(psych)
+library(ggplot2)
+library(lme4)
+library(readxl)
+library(excel.link)
+library(tidyverse)
+library(tidyr)
+library(dplyr)
+library(extrafont)
+library(metafor)
+library(readxl)
+
+```
+
+
+```{r Meta 3 Variables}
+
+# Read the Excel file
+
+testmeta <- read_excel("CE-language-meta-data.xlsx")
+
+# Checking the unique combinations
+unique_combinations <- unique(with(testmeta, paste(`IJA/RJA`, `Comp/Prod`, `Concurrent/Longitudinal`, sep = ": ")))
+
+# Creating Group_all with correct levels
+testmeta$Group_all <- with(testmeta, factor(paste(`IJA/RJA`, `Comp/Prod`, `Concurrent/Longitudinal`, sep = ": "),
+                                  levels = unique_combinations))
+
+# Update group_identifiers based on the actual levels found
+group_identifiers_all <- setNames(seq_along(unique_combinations), unique_combinations)
+
+# Adding the Groupn_all column
+testmeta <- testmeta %>%
+  mutate(Groupn_all = group_identifiers_all[as.character(Group_all)])
+
+# Remove rows with "NA" in the Group_all column
+testmeta <- testmeta %>%
+  filter(!grepl("NA", as.character(Group_all)))
+
+testmeta <- testmeta %>%
+  filter(`ESCS Y/N` == "Y")
+
+# Adding the gid_all 
+testmeta$gid_all <- ave(testmeta$Groupn_all, testmeta$Groupn_all, FUN = cumsum)
+
+# Calculate effect sizes and variances
+dat_0 <- escalc(measure="MD", yi=z, vi=vi, data=testmeta, slab=paste("Group", Group_all, "gid", gid_all))
+
+# Aggregate the data by Group_all
+agg_data <- dat_0 %>%
+  group_by(Group_all) %>%
+  summarise(
+    yi = weighted.mean(yi, w = 1 / vi),
+    vi = 1 / sum(1 / vi),
+    .groups = 'drop'
+  )
+
+# Calculate the sum of all weights
+agg_data <- mutate(agg_data, weight = 1 / vi)
+
+total_weight <- sum(agg_data$weight)
+
+# Calculate the percentage weight for each study
+agg_data <- mutate(agg_data, percent_weight = (weight / total_weight) * 100)
+
+# Run the meta-analysis on the aggregated data
+meta_analysis0 <- rma(yi, vi, data=agg_data, method="REML")
+
+# Generate the forest plot
+#png("/Users/cmj39767/Desktop/forestplot_all.png", width=800, height=600)
+
+# Set up margins 
+par(mar=c(5,4,4,8)) 
+
+# Create the forest plot with the aggregated data
+forest_all <- forest(meta_analysis0, refline=0, xlim=c(-1, 1), alim=c(-.4, .4), 
+       cex=.9, header=TRUE, xlab="Effect Size", 
+       slab=agg_data$Group_all, mlab="")
+forest_all
+usr <- par("usr")
+
+# Add the percentage weight labels to the forest plot
+text(x = usr[2] + 0.03 * (usr[2] - usr[1]), y = 1:nrow(agg_data), 
+     labels=paste0(round(agg_data$percent_weight, 1), "%"), pos=4, xpd=TRUE, cex=.9)
+
+# Cover the "Study" label with a white rectangle
+rect(xleft=usr[1]  - 0.01 * (usr[2] - usr[1]), ybottom=par("usr")[4] - 2.2, 
+     xright=usr[1] + 0.5 * (usr[2] - usr[1]), ytop=par("usr")[4], 
+     col = "white", border = "white", xpd = NA)
+
+# Add the "Group" header where "Study" was
+mtext("Group", side=3, line=-.9, at=usr[1], cex=.9, font=2, las=0, adj=0, xpd=TRUE)
+
+# Add a column header for weights 
+mtext("Weights", side=3, line=-.9, at=usr[2] + .25, cex=.9, font=2, las=0, adj=1, xpd=TRUE)
+
+```
+
+```{r significance tests for vocabulary measures used}
+Meta_data_vocab <- testmeta %>%
+  select(Vocab_Measure, r)
+t.test(Meta_data_RDL$r, Meta_data_CDI$r)
+
+library(report)
+report(aov(r ~ Vocab_Measure,
+  data = Meta_data_vocab
+))
+
+oneway.test(r ~ Vocab_Measure,
+  data = Meta_data_vocab,
+  var.equal = FALSE # assuming unequal variances
+)
+```
+
+
+```{r Forest Plot: Comparing Pooled Concurrent & Longitudinal Effect Sizes by ESCS Group }
+
+# Filter out unwanted rows
+testmeta <- testmeta[testmeta$`IJA/RJA` != "" & !is.na(testmeta$`IJA/RJA`), ]
+
+# Combine the two columns to create the Group factor
+testmeta$Group <- with(testmeta, factor(paste(`IJA/RJA`, `Concurrent/Longitudinal`, sep = ": "),
+                                        levels = c( "GP: Longitudinal", "GP: Concurrent", 
+                                                     "IJA: Concurrent", "IJA: Longitudinal", "RJA: Concurrent",
+                                                   "RJA: Longitudinal")))
+
+testmeta <- testmeta %>%
+  filter(`ESCS Y/N` == "Y")
+
+# Calculate effect sizes and variances
+dat <- escalc(measure="MD", yi=z, vi=vi, data=testmeta, slab=paste("Group", Group, "gid", gid))
+
+# Split data by Group
+split_data <- split(dat, dat$Group)
+
+# Function to aggregate data
+aggregate_fun <- function(df) {
+  yi_mean <- weighted.mean(df$yi, w = 1 / df$vi)
+  vi_inv_sum <- sum(1 / df$vi)
+  weight <- 1 / vi_inv_sum
+  return(data.frame(yi = yi_mean, vi = 1 / vi_inv_sum, weight = weight))
+}
+
+# Apply the function 
+agg_data <- do.call(rbind, lapply(split_data, aggregate_fun))
+agg_data$Group <- rownames(agg_data)
+
+# Calculate the sum of all weights
+total_weight <- sum(agg_data$weight)
+
+# Calculate the percentage weight for each study
+agg_data$percent_weight <- (agg_data$weight / total_weight) * 100
+
+# Run the meta-analysis on the aggregated data
+meta_analysis_agg <- rma(yi, vi, data=agg_data, method="REML")
+
+# Generate the forest plot
+#png("~/Desktop/forestplot_CL.png", width=800, height=600)
+
+# Set up margins 
+par(mar=c(5,4,4,8)) 
+
+# Create the forest plot
+forest <- forest(meta_analysis_agg, refline=0, xlim=c(-1, 1), alim=c(-.4, .4), 
+       cex=1, header=TRUE, xlab="Effect Size", 
+       slab=agg_data$Group)
+forest
+
+usr <- par("usr")
+
+text(x = usr[2] + 0.03 * (usr[2] - usr[1]), y = 1:nrow(agg_data), 
+     labels=paste0(round(agg_data$percent_weight, 1), "%"), pos=4, xpd=TRUE, cex=1)
+
+# Cover the "Study" label with a rectangle
+rect(xleft=usr[1]  - 0.01 * (usr[2] - usr[1]), ybottom=par("usr")[4] - 2.2, 
+     xright=usr[1] + 0.5 * (usr[2] - usr[1]), ytop=par("usr")[4], 
+     col = "white", border = "white", xpd = NA)
+
+# Add the "Group" header 
+mtext("Group", side=3, line=-1.3, at=usr[1], cex=1, font=2, las=0, adj=0, xpd=TRUE)
+
+# Add a column header for weights 
+mtext("Weights", side=3, line=-1.3, at=usr[2] + .3, cex=1, font=2, las=0, adj=1, xpd=TRUE)
+
+
+
+```
+
+```{r Forest Plot: Comparing Pooled Productive/Comprehensive Vocabulary Effect by ESCS Group }
+
+# Create the Group_Vocab factor with the specified levels
+testmeta$Group_Vocab <- with(testmeta, factor(paste(`IJA/RJA`, `Comp/Prod`, sep = ": "),
+                                              levels = c("GP: Prod", "GP: Comp", "IJA: Comp", "IJA: Prod", "RJA: Comp", "RJA: Prod")))
+
+# Assign numeric identifiers based on the levels
+group_identifiers <- c("GP: Prod" = 1, "GP: Comp" = 2, "IJA: Comp" = 3, "IJA: Prod" = 4, "RJA: Comp" = 5, "RJA: Prod" = 6)
+
+# Filter out entries where `ESCS Y/N` is "Y"
+testmeta <- testmeta %>%
+  filter(`ESCS Y/N` == "Y")
+
+# Assign numeric group identifiers
+testmeta$Groupn_Vocab <- group_identifiers[as.character(testmeta$Group_Vocab)]
+
+# Add a cumulative count within each group
+testmeta$gid_vocab <- ave(testmeta$Groupn_Vocab, testmeta$Groupn_Vocab, FUN = cumsum)
+
+# Calculate effect sizes and variances
+dat_2 <- escalc(measure="MD", yi=z, vi=vi, data=testmeta, slab=paste("Group", Group_Vocab, "gid", gid_vocab))
+
+# Aggregate the data by Group_Vocab
+agg_data_2 <- dat_2 %>%
+  group_by(Group_Vocab) %>%
+  summarise(
+    yi = weighted.mean(yi, w = 1 / vi),
+    vi = 1 / sum(1 / vi),
+    .groups = 'drop'
+  )
+
+# Calculate the sum of all weights
+agg_data_2$weight <- 1 / agg_data_2$vi
+total_weight_2 <- sum(agg_data_2$weight)
+
+# Calculate the percentage weight for each group
+agg_data_2$percent_weight <- (agg_data_2$weight / total_weight_2) * 100
+
+# Run the meta-analysis
+meta_analysis2 <- rma(yi, vi, data=agg_data_2, method="REML")
+
+
+# Set up margins 
+par(mar=c(5,4,4,8)) 
+
+# Create the forest plot with the aggregated data
+forest1 <- forest(meta_analysis2, refline=0, xlim=c(-1, 1), alim=c(-.4, .4), 
+       cex=1, header=TRUE, xlab="Effect Size", 
+       slab=agg_data_2$Group_Vocab)
+forest1
+
+usr <- par("usr")
+
+# Add the percentage weight labels to the forest plot
+text(x = usr[2] + 0.03 * (usr[2] - usr[1]), y = 1:nrow(agg_data_2), 
+     labels=paste0(round(agg_data_2$percent_weight, 1), "%"), pos=4, xpd=TRUE, cex=1)
+
+# Cover the "Study" label with a white rectangle
+rect(xleft=usr[1] - 0.01 * (usr[2] - usr[1]), ybottom=par("usr")[4] - 2.0, 
+     xright=usr[1] + 0.1 * (usr[2] - usr[1]), ytop=par("usr")[4], 
+     col = "white", border = "white", xpd = NA)
+
+# Add the "Group" header where "Study" was
+mtext("Group", side=3, line=-1.5, at=usr[1], cex=1, font=2, las=0, adj=0, xpd=TRUE)
+
+# Add a column header for weights 
+mtext("Weights", side=3, line=-1.5, at=usr[2] + .3, cex=1, font=2, las=0, adj=1, xpd=TRUE)
+
+
+```
+
+```{r Forest Plot: Comparing Pooled Reported Effect Sizes by Age Group of JA Variable Measurement }
+
+testmeta <- xl.read.file("CE-language-meta-data.xlsx")
+
+# Filter for longitudinal studies
+testmeta <- testmeta %>% 
+  filter(`Concurrent/Longitudinal` == "Longitudinal")
+
+# Create age1_groups based on the Age1 (months) - JA? column
+testmeta$age1_groups <- cut(testmeta$`Age1 (months) - JA?`,
+                             breaks = c(-Inf, 8, 11, 15, 19, 23, Inf),
+                             labels = c("<8", "8-11", "11-15", "15-19", "19-23", ">23"),
+                             right = FALSE)
+
+# Create numeric identifiers for age groups
+group_age_identifiers <- c("<8" = 1, "8-11" = 2, "11-15" = 3, "15-19" = 4, "19-23" = 5, ">23" = 6)
+
+# Assign numeric group identifiers
+testmeta$age1_groupn <- group_age_identifiers[as.character(testmeta$age1_groups)]
+
+# Add a cumulative count within each age group
+testmeta$gid_age1 <- ave(testmeta$age1_groupn, testmeta$age1_groupn, FUN = cumsum)
+
+# Calculate effect sizes and variances
+dat_3 <- escalc(measure="MD", yi=z, vi=vi, data=testmeta, slab=paste("Group", age1_groups, "gid", gid_age1))
+
+# Aggregate the data by age1_groups
+agg_data_3 <- dat_3 %>%
+  group_by(age1_groups) %>%
+  summarise(
+    yi = weighted.mean(yi, w = 1 / vi),
+    vi = 1 / sum(1 / vi),
+    .groups = 'drop'
+  )
+agg_data_3 <- na.omit(agg_data_3)
+# Calculate the sum of all weights
+agg_data_3$weight <- 1 / agg_data_3$vi
+total_weight_3 <- sum(agg_data_3$weight)
+
+# Calculate the percentage weight for each group
+agg_data_3$percent_weight <- (agg_data_3$weight / total_weight_3) * 100
+
+# Run the meta-analysis
+meta_analysis3 <- rma(yi, vi, data=agg_data_3, method="REML")
+
+# Set up margins 
+par(mar=c(5,4,4,8)) 
+
+# Create the forest plot with the aggregated data
+forest_age <- forest(meta_analysis3, refline=0, xlim=c(-1, 1), alim=c(-.4, .4), header=TRUE, xlab="Effect Size", 
+       slab=agg_data_3$age1_groups, mlab="")
+forest_age
+
+usr <- par("usr")
+
+# Add the percentage weight labels to the forest plot
+text(x = usr[2] + 0.05 * (usr[2] - usr[1]), y = 1:nrow(agg_data_3), 
+     labels=paste0(round(agg_data_3$percent_weight, 1), "%"), pos=4, xpd=TRUE)
+
+# Cover the "Study" label with a white rectangle
+rect(xleft=usr[1] - 0.01 * (usr[2] - usr[1]), ybottom=par("usr")[4] - 2.0, 
+     xright=usr[1] + 0.1 * (usr[2] - usr[1]), ytop=par("usr")[4], 
+     col = "white", border = "white", xpd = NA)
+
+# Add the "Group" header where "Study" was
+mtext("Group", side=3, line=-1.4, at=usr[1], cex=1, font=2, las=0, adj=0, xpd=TRUE)
+
+# Add a column header for weights 
+mtext("Weights", side=3, line=-1.4, at=usr[2] + .3, cex=1, font=2, las=0, adj=1, xpd=TRUE)
+
+
+```
+
+
+
+```{r Forest Plot: Pooled results for comprehensive vocabulary only  }
+
+# Create the necessary columns
+testmeta$age_category <- ifelse(testmeta$`Age2 (months) - vocab?` < 13, "young", "old")
+testmeta$gaze_escs_category <- ifelse(testmeta$`ESCS Y/N` == "Y", "ESCS", "Gaze")
+testmeta$age_Gaze_ESCS <- paste(testmeta$age_category, testmeta$gaze_escs_category)
+testmeta$age_Gaze_ESCS_comp <- ifelse(testmeta$`Comp/Prod` == "Comp", testmeta$age_Gaze_ESCS, NA)
+
+# Numeric identifiers for the new groups
+group_ageVocab_identifiers <- c("NA Gaze" = 1, "old ESCS" = 2, "old Gaze" = 3, "young ESCS" = 4, "young Gaze" = 5)
+
+# Add numeric group identifiers
+testmeta <- testmeta %>%
+  mutate(Groupn_ageVocab_type = group_ageVocab_identifiers[as.character(age_Gaze_ESCS_comp)])
+
+# Cumulative count within each group
+testmeta$gid_ageVocab <- ave(testmeta$Groupn_ageVocab_type, testmeta$Groupn_ageVocab_type, FUN = cumsum)
+
+dat_4 <- escalc(measure="MD", yi=z, vi=vi, data=testmeta, slab=paste("Group", age_Gaze_ESCS_comp, "gid", gid_ageVocab))
+
+# Filter out the NAs
+temp_dat_4 <- dat_4[!is.na(dat_4$age_Gaze_ESCS_comp), ]
+
+# Aggregate the data by age_Gaze_ESCS_comp
+agg_data_4 <- temp_dat_4 %>%
+  group_by(age_Gaze_ESCS_comp) %>%
+  summarise(
+    yi = weighted.mean(yi, w = 1 / vi),
+    vi = 1 / sum(1 / vi),
+    .groups = 'drop'
+  )
+
+# Calculate weights and percentage 
+agg_data_4 <- mutate(agg_data_4, weight = 1 / vi, percent_weight = (weight / sum(weight)) * 100)
+
+# Run the meta-analysis 
+meta_analysis4 <- rma(yi, vi, data=agg_data_4, method="REML")
+
+# Generate the forest plot
+par(mar=c(5,4,4,8))  # Set up margins 
+
+forest_oldyoung <- forest(meta_analysis4, refline=0, xlim=c(-1, 1), alim=c(-.4, .4), 
+       header=TRUE, xlab="Effect Size", 
+       slab=agg_data_4$age_Gaze_ESCS_comp, mlab="")
+forest_oldyoung
+# Add the percentage weight labels to the forest plot
+usr <- par("usr")
+text(x = usr[2] + 0.05 * (usr[2] - usr[1]), y = 1:nrow(agg_data_4), 
+     labels=paste0(round(agg_data_4$percent_weight, 1), "%"), pos=4, xpd=TRUE)
+
+# Cover the "Study" label with a white rectangle
+rect(xleft=usr[1] - 0.01 * (usr[2] - usr[1]), ybottom=par("usr")[4] - 2.0, 
+     xright=usr[1] + 0.1 * (usr[2] - usr[1]), ytop=par("usr")[4], 
+     col = "white", border = "white", xpd = NA)
+
+# Add the "Group" header where "Study" was
+mtext("Group", side=3, line=-1.85, at=usr[1], cex=1, font=2, las=0, adj=0, xpd=TRUE)
+
+# Add a column header for weights 
+mtext("Weights", side=3, line=-1.85, at=usr[2] + .3, cex=1, font=2, las=0, adj=1, xpd=TRUE)
+
+
+
+```
+
+```{r Forest Plot: Pooled Results Comparing Old/Young Groups for all Vocabulary Types}
+
+# Create the necessary columns
+testmeta$age_category <- ifelse(testmeta$`Age2 (months) - vocab?` < 13, "young", "old")
+testmeta$gaze_escs_category <- ifelse(testmeta$`ESCS Y/N` == "Y", "ESCS", "Gaze")
+testmeta$age_Gaze_ESCS <- paste(testmeta$age_category, testmeta$gaze_escs_category)
+
+# Numeric identifiers for the new groups
+group_ageVocab_identifiers <- c("NA Gaze" = 1, "old ESCS" = 2, "old Gaze" = 3, "young ESCS" = 4, "young Gaze" = 5)
+
+# Assign numeric group identifiers
+testmeta <- testmeta %>%
+  mutate(Groupn_ageVocab_all = group_ageVocab_identifiers[as.character(age_Gaze_ESCS)])
+
+# Cumulative count within each group
+testmeta$gid_ageVocab_all <- ave(testmeta$Groupn_ageVocab_all, testmeta$Groupn_ageVocab_all, FUN = cumsum)
+
+# Calculate effect sizes and variances
+dat_5 <- escalc(measure="MD", yi=z, vi=vi, data=testmeta, slab=paste("Group", age_Gaze_ESCS, "gid", gid_ageVocab_all))
+
+# Aggregate the data by age_Gaze_ESCS
+agg_data_5 <- dat_5 %>%
+  group_by(age_Gaze_ESCS) %>%
+  summarise(
+    yi = weighted.mean(yi, w = 1 / vi),
+    vi = 1 / sum(1 / vi),
+    .groups = 'drop'
+  )
+
+# Calculate weights and percentage 
+agg_data_5 <- mutate(agg_data_5, weight = 1 / vi, percent_weight = (weight / sum(weight)) * 100)
+
+# Run the meta-analysis 
+meta_analysis5 <- rma(yi, vi, data=agg_data_5, method="REML")
+
+# Generate the forest plot
+
+par(mar=c(5,4,4,8)) 
+
+forest(meta_analysis5, refline=0, xlim=c(-1, 1), alim=c(-.4, .4), 
+       header=TRUE, xlab="Effect Size", 
+       slab=agg_data_5$age_Gaze_ESCS, mlab="")
+
+# Add the percentage weight
+usr <- par("usr")
+text(x = usr[2] + 0.05 * (usr[2] - usr[1]), y = 1:nrow(agg_data_5), 
+     labels=paste0(round(agg_data_5$percent_weight, 1), "%"), pos=4, xpd=TRUE)
+
+# Cover the "Study" label with a white rectangle
+rect(xleft=usr[1] - 0.01 * (usr[2] - usr[1]), ybottom=par("usr")[4] - 2.0, 
+     xright=usr[1] + 0.1 * (usr[2] - usr[1]), ytop=par("usr")[4], 
+     col = "white", border = "white", xpd = NA)
+
+# Add the "Group" header where "Study" was
+mtext("Group", side=3, line=-1.85, at=usr[1], cex=1, font=2, las=0, adj=0, xpd=TRUE)
+
+# Add a column header for weights 
+mtext("Weights", side=3, line=-1.85, at=usr[2] + .3, cex=1, font=2, las=0, adj=1, xpd=TRUE)
+
+```
+
+```{r publication bias}
+
+#Rosenthal's fail safe:
+fsn(testmeta$r, vi=testmeta$Variance, alpha = 0.01, type="Rosenthal")
+
+#Meta-regressions of publication status
+
+meta_pubbias <- rma(yi = testmeta$r, 
+                     vi = testmeta$Variance, 
+                     mods = ~ Published, 
+                     data = testmeta)
+meta_pubbias
+
+testmeta_prod <- testmeta%>%
+  filter(`Comp/Prod` == "Prod")
+
+testmeta_pub <- testmeta%>%
+  filter(Published == "Y")
+
+
+meta_pubbias <- rma(yi = r, 
+                     sei = se, 
+                     mods = ~ `Concurrent/Longitudinal`-1, 
+                     data = testmeta_prod)
+meta_pubbias
+
+meta_pubbias <- rma(yi = r, 
+                     sei = se, 
+                     mods = ~ `ESCS Y/N`-1, 
+                     data = testmeta_pub)
+meta_pubbias
+```
+```
+
+
+```{r Funnel Plot: All Effect Sizes }
+testmeta<- testmeta %>%
+  filter(Variance > 0)
+
+
+
+meta_analysis_EffectSize <- rma(yi = testmeta$z, 
+                     vi = testmeta$Variance, 
+                     data = testmeta)
+
+
+funnel(meta_analysis_EffectSize, back = "white", pch = 21)
+
+#Egger's test
+regtest(meta_analysis_EffectSize)
+
+```
+
+```{r Funnel Plot: All ESCS Group Effect Sizes }
+
+testmeta_escs<- testmeta %>%
+  filter(`ESCS Y/N` == "Y")
+
+
+
+meta_analysis_EffectSize <- rma(yi = testmeta_escs$z, 
+                     vi = testmeta_escs$Variance, 
+                     data = testmeta_escs)
+
+
+funnel(meta_analysis_EffectSize, back = "white", pch = 21)
+
+regtest(meta_analysis_EffectSize)
+
+
+```
+
+```{r Funnel Plot: All Gaze Pattern Group Effect Sizes }
+
+testmeta_GP <- testmeta %>%
+  filter(`IJA/RJA` =="GP")
+
+meta_analysis_EffectSize_GP <- rma(yi = testmeta_GP$z, 
+                     vi = testmeta_GP$Variance, 
+                     data = testmeta_GP)
+
+
+funnel(meta_analysis_EffectSize_GP, back = "white", pch = 21)
+regtest(meta_analysis_EffectSize_GP)
+```
+
+```{r meta-regressions of longitudinal effects}
+data_RJA <- testmeta %>%
+   filter(`IJA/RJA` == "RJA")
+
+data_IJA <- testmeta %>%
+   filter(`IJA/RJA` == "IJA")
+
+table1_IJA_age <- rma(yi = r, 
+                     vi = Variance, 
+                     mods = ~`Age1 (months) - JA?`, 
+                     data = data_IJA)
+table1_IJA_age
+
+
+table1_IJA_long <- rma(yi = r, 
+                     vi = Variance, 
+                     mods = ~Longitudinal_Gap, 
+                     data = data_IJA)
+table1_IJA_long
+
+table1_RJA_age <- rma(yi = r, 
+                     vi = Variance, 
+                     mods = ~`Age1 (months) - JA?`, 
+                     data = data_RJA)
+table1_RJA_age
+
+
+table1_RJA_long <- rma(yi = r, 
+                     vi = Variance, 
+                     mods = ~Longitudinal_Gap, 
+                     data = data_RJA)
+table1_RJA_long
+
+
+data_gp <- filter(testmeta, `IJA/RJA` == "GP")
+
+
+table1_gp_long <- rma(yi = r, 
+                     vi = Variance, 
+                     mods = ~Longitudinal_Gap, 
+                     data = data_gp)
+
+table1_gp_long <- rma(yi = r, 
+                     vi = Variance, 
+                     mods = ~Longitudinal_Gap, 
+                     data = data_gp)
+
+table1_gp_age <- rma(yi = r, 
+                     vi = Variance, 
+                     mods = ~`Age1 (months) - JA?`, 
+                     data = data_gp)
+table1_gp_age
+
+data_long <- filter(testmeta, `Concurrent/Longitudinal` == "Longitudinal")
+
+
+table1_long_age <- rma(yi = r, 
+                     vi = Variance, 
+                     mods = ~`Age1 (months) - JA?`, 
+                     data = data_long)
+
+table1_long_long <- rma(yi = r, 
+                     vi = Variance, 
+                     mods = ~Longitudinal_Gap, 
+                     data = data_long)
+
+```
+
+```{r t-tests for ESCS vs GP}
+testmeta <- xl.read.file("C:/Users/gs94051/Documents/Fall 2023/Research/JA Meta/testmeta.xlsx")
+
+testmeta_GP_prod <- testmeta %>%
+   filter(`IJA/RJA` == "GP" & `Comp/Prod` == "Prod")
+
+testmeta_noGP_prod <- testmeta %>%
+   filter(`IJA/RJA` != "GP"& `ESCS Y/N` == "Y" &  `Comp/Prod` == "Prod")
+
+t.test(testmeta_noGP_prod$r, testmeta_GP_prod$r)
+t.test(testmeta_GP_prod$r)
+t.test(testmeta_noGP_prod$r)
+
+testmeta_GP_comp <- testmeta %>%
+   filter(`IJA/RJA` == "GP" & `Comp/Prod` == "Comp")
+
+testmeta_noGP_comp <- testmeta %>%
+   filter(`IJA/RJA` != "GP"& `ESCS Y/N` == "Y" &  `Comp/Prod` == "Comp")
+
+t.test(testmeta_noGP_comp$r, testmeta_GP_comp$r)
+t.test(testmeta_GP_comp$r)
+t.test(testmeta_noGP_comp$r)
+
+testmeta_GP <- testmeta %>%
+   filter(`IJA/RJA` == "GP")
+
+testmeta_noGP <- testmeta %>%
+   filter(`IJA/RJA` != "GP"& `ESCS Y/N` == "Y")
+t.test(testmeta_noGP$r, testmeta_GP$r)
+t.test(testmeta_GP$r)
+t.test(testmeta_noGP$r)
+
+testmeta_GP_conc <- testmeta %>%
+  filter(`Concurrent/Longitudinal` == "Concurrent" & `IJA/RJA` == "GP")
+
+testmeta_noGP_conc <- testmeta %>%
+  filter(`Concurrent/Longitudinal` == "Concurrent" & `IJA/RJA` != "GP" & `ESCS Y/N` == "Y")
+
+t.test(testmeta_noGP_conc$r, testmeta_GP_conc$r)
+t.test(testmeta_GP_conc$r)
+t.test(testmeta_noGP_conc$r)
+
+testmeta_GP_long <- testmeta %>%
+  filter(`Concurrent/Longitudinal` == "Longitudinal" & `IJA/RJA` == "GP")
+
+testmeta_noGP_long <- testmeta %>%
+  filter(`Concurrent/Longitudinal` == "Longitudinal" & `IJA/RJA` != "GP" & `ESCS Y/N` == "Y")
+
+t.test(testmeta_noGP_long$r, testmeta_GP_long$r)
+t.test(testmeta_GP_long$r)
+t.test(testmeta_noGP_long$r)
+```
+
+
+```{r t-test}
+
+# Read the data from Excel
+testmeta <- read_excel("/Users/cmj39767/Desktop/Meta/testmeta.xlsx")
+
+# Function to format P values
+format_p <- function(p_value) {
+  if (p_value < 0.001) {
+    return(sprintf("*** (P < %.3f)", p_value))
+  } else if (p_value < 0.01) {
+    return(sprintf("** (P < %.3f)", p_value))
+  } else if (p_value < 0.05) {
+    return(sprintf("* (P < %.3f)", p_value))
+  } else {
+    return(sprintf("(P = %.3f)", p_value))
+  }
+}
+
+# data frame to store the results
+results <- data.frame(Category = character(), 
+                      RJA_T_Value = numeric(), 
+                      IJA_T_Value = numeric(), 
+                      P_Value_RJA = character(), 
+                      P_Value_IJA = character(), 
+                      Two_Sample_P_Value = numeric(), 
+                      stringsAsFactors = FALSE)
+
+# Loop through each category in 'Comp/Prod'
+for (cp in unique(testmeta$`Comp/Prod`)) {
+  # Subset data for IJA and RJA within the 'Comp/Prod'
+  ija_data <- subset(testmeta, `IJA/RJA` == "IJA" & `Comp/Prod` == cp)
+  rja_data <- subset(testmeta, `IJA/RJA` == "RJA" & `Comp/Prod` == cp)
+
+  # Perform one-sample t-tests 
+  if (length(ija_data$r) > 1) {
+    t_test_ija <- t.test(ija_data$r)
+    ija_t_value <- t_test_ija$statistic
+    p_value_ija <- format_p(t_test_ija$p.value)
+  } else {
+    ija_t_value <- NA
+    p_value_ija <- NA
+  }
+
+  if (length(rja_data$r) > 1) {
+    t_test_rja <- t.test(rja_data$r)
+    rja_t_value <- t_test_rja$statistic
+    p_value_rja <- format_p(t_test_rja$p.value)
+  } else {
+    rja_t_value <- NA
+    p_value_rja <- NA
+  }
+
+  # Perform a two-sample t-test between IJA and RJA 
+  if (length(ija_data$r) > 1 && length(rja_data$r) > 1) {
+    two_sample_test <- t.test(ija_data$r, rja_data$r)
+    two_sample_p_value <- two_sample_test$p.value
+  } else {
+    two_sample_p_value <- NA
+  }
+
+  # results
+  results <- rbind(results, data.frame(
+    Category = cp,
+    RJA_T_Value = rja_t_value,
+    IJA_T_Value = ija_t_value,
+    P_Value_RJA = p_value_rja,
+    P_Value_IJA = p_value_ija,
+    Two_Sample_P_Value = two_sample_p_value
+  ))
+}
+
+# Repeat the loop for 'Concurrent/Longitudinal'
+for (cl in unique(testmeta$`Concurrent/Longitudinal`)) {
+  # Subset data for IJA and RJA within the 'Concurrent/Longitudinal'
+  ija_data <- subset(testmeta, `IJA/RJA` == "IJA" & `Concurrent/Longitudinal` == cl)
+  rja_data <- subset(testmeta, `IJA/RJA` == "RJA" & `Concurrent/Longitudinal` == cl)
+
+  # Perform one-sample t-tests 
+  if (length(ija_data$r) > 1) {
+    t_test_ija <- t.test(ija_data$r)
+    ija_t_value <- t_test_ija$statistic
+    p_value_ija <- format_p(t_test_ija$p.value)
+  } else {
+    ija_t_value <- NA
+    p_value_ija <- NA
+  }
+
+  if (length(rja_data$r) > 1) {
+    t_test_rja <- t.test(rja_data$r)
+    rja_t_value <- t_test_rja$statistic
+    p_value_rja <- format_p(t_test_rja$p.value)
+  } else {
+    rja_t_value <- NA
+    p_value_rja <- NA
+  }
+
+  # Perform a two-sample t-test between IJA and RJA 
+  if (length(ija_data$r) > 1 && length(rja_data$r) > 1) {
+    two_sample_test <- t.test(ija_data$r, rja_data$r)
+    two_sample_p_value <- two_sample_test$p.value
+  } else {
+    two_sample_p_value <- NA
+  }
+
+  #results
+  results <- rbind(results, data.frame(
+    Category = cl,
+    RJA_T_Value = rja_t_value,
+    IJA_T_Value = ija_t_value,
+    P_Value_RJA = p_value_rja,
+    P_Value_IJA = p_value_ija,
+    Two_Sample_P_Value = two_sample_p_value
+  ))
+}
+
+# Calculate the totals for RJA_T_Value, IJA_T_Value, and Two_Sample_P_Value
+total_rja_t_value <- sum(results$RJA_T_Value, na.rm = TRUE)
+total_ija_t_value <- sum(results$IJA_T_Value, na.rm = TRUE)
+total_two_sample_p_value <- sum(results$Two_Sample_P_Value, na.rm = TRUE)
+
+# total results table
+results <- rbind(results, data.frame(
+    Category = "Total",
+    RJA_T_Value = total_rja_t_value,
+    IJA_T_Value = total_ija_t_value,
+    P_Value_RJA = NA, 
+    P_Value_IJA = NA,
+    Two_Sample_P_Value = total_two_sample_p_value
+))
+
+
+print(results)
+
+# Save the results to an Excel file
+openxlsx::write.xlsx(results, file = "/Users/cmj39767/Desktop/results.xlsx")
+
+```
+
+
+```{r Bubble Plot}
+
+
+testmeta$Longitudinal_Gap <- abs(testmeta$`Age2 (months) - vocab?` - testmeta$`Age1 (months) - JA?`)
+
+# Categorize the Longitudinal Gap according to your specific groups
+testmeta$Longitudinal_Gap_Category <- cut(testmeta$Longitudinal_Gap,
+                                          breaks = c(-Inf, 5, 15, 25, 35, Inf),
+                                          labels = c("0", "10", "20", "30", "40"),
+                                          right = FALSE)
+
+# Create the bubble plot
+bubble_plot <- ggplot(testmeta, aes(x = `Age1 (months) - JA?`, 
+                                    y = r, 
+                                    size = Longitudinal_Gap_Category, 
+                                    color = `IJA/RJA`)) +
+  geom_point(alpha = 0.5) +
+  scale_size_manual(values = c("0" = 3, "10" = 6, "20" = 9, "30" = 12, "40" = 15)) +
+  theme_minimal() +
+  labs(title = ,
+       x = "Age of JA variable test",
+       y = "Reported Effect Size",
+       size = "Longitudinal Gap") +
+  theme(legend.position = "right")
+
+# Save the plot
+ggsave("~/Desktop/bubble_plot.png", bubble_plot, width = 10, height = 7, dpi = 300)
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
